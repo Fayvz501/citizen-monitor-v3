@@ -1,36 +1,14 @@
-<div>
-  <script nonce="csp_nonce" src="https://unpkg.com/@vkid/sdk@<3.0.0/dist-sdk/umd/index.js"></script>
-  <script nonce="csp_nonce" type="text/javascript">
-    if ('VKIDSDK' in window) {
-      const VKID = window.VKIDSDK;
-      VKID.Config.init({
-        app: 54519886,
-        redirectUrl: 'https://citizen-monitor-v3.onrender.com/vk-callback.html',
-        responseMode: VKID.ConfigResponseMode.Callback,
-        source: VKID.ConfigSource.LOWCODE,
-        scope: '', // Заполните нужными доступами по необходимости
-      });
-      const oneTap = new VKID.OneTap();
-      oneTap.render({
-        container: document.currentScript.parentElement,
-        showAlternativeLogin: true
-      })
-      .on(VKID.WidgetEvents.ERROR, vkidOnError)
-      .on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, function (payload) {
-        const code = payload.code;
-        const deviceId = payload.device_id;
-        VKID.Auth.exchangeCode(code, deviceId)
-          .then(vkidOnSuccess)
-          .catch(vkidOnError);
-      });
-    
-      function vkidOnSuccess(data) {
-        // Обработка полученного результата
-      }
-    
-      function vkidOnError(error) {
-        // Обработка ошибки
-      }
-    }
-  </script>
-</div>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VK Auth</title>
+</head>
+<body style="margin:0;background:#0a0a0f;color:#e8e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+  <div style="text-align:center">
+    <h2>⚡ Авторизация VK...</h2>
+    <p>Окно можно закрыть</p>
+  </div>
+</body>
+</html>
