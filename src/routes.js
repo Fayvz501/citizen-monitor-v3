@@ -63,59 +63,36 @@ router.post('/auth/login', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// ─── VK OAuth (VK ID SDK) ───
+// ─── VK OAuth (VK ID with PKCE) ───
 router.post('/auth/vk', async (req, res) => {
   try {
-    const { code, redirect_uri, token, vk_data } = req.body;
-    let access_token, vk_user_id, email;
+    const { code, redirect_uri, code_verifier, device_id } = req.body;
+    if (!code) return res.status(400).json({ error: 'No code' });
 
-    if (token) {
-      // VK ID SDK flow — token already exchanged client-side
-      access_token = token;
-    } else if (code) {
-      // Legacy OAuth flow — exchange code server-side
-      const vk = await exchangeVkCode(code, redirect_uri);
-      access_token = vk.access_token;
-      vk_user_id = vk.vk_id;
-      email = vk.email;
-    } else {
-      return res.status(400).json({ error: 'No auth data provided' });
-    }
-
-    // Get user info from VK API
-    const userUrl = `https://api.vk.com/method/users.get?fields=photo_100,first_name,last_name&access_token=${access_token}&v=5.199`;
-    const userRes = await fetch(userUrl);
-    const userData = await userRes.json();
-    const vkUser = userData.response?.[0];
-    if (!vkUser) return res.status(400).json({ error: 'Failed to get VK user info' });
-
-    const vkId = vkUser.id;
+    const vk = await exchangeVkCode(code, redirect_uri, code_verifier, device_id);
     const db = getDb();
 
-    // Find or create user
-    let user = db.prepare('SELECT * FROM users WHERE vk_id=?').get(vkId);
-
+    let user = db.prepare('SELECT * FROM users WHERE vk_id=?').get(vk.vk_id);
     if (user) {
       db.prepare('UPDATE users SET vk_name=?,vk_photo=?,last_active=CURRENT_TIMESTAMP WHERE id=?')
-        .run(`${vkUser.first_name} ${vkUser.last_name}`, vkUser.photo_100, user.id);
+        .run(`${vk.first_name} ${vk.last_name}`, vk.photo, user.id);
     } else {
-      const username = `${vkUser.first_name}_${vkId}`.substring(0, 20);
+      const username = `${vk.first_name}_${vk.vk_id}`.substring(0, 20);
       const colors = ['#ff3b3b','#ff8c00','#ffd000','#3b8bff','#00d97e','#a855f7'];
       const r = db.prepare('INSERT INTO users (username,email,vk_id,vk_name,vk_photo,avatar_color) VALUES (?,?,?,?,?,?)')
-        .run(username, email || null, vkId, `${vkUser.first_name} ${vkUser.last_name}`, vkUser.photo_100, colors[Math.floor(Math.random()*colors.length)]);
+        .run(username, vk.email, vk.vk_id, `${vk.first_name} ${vk.last_name}`, vk.photo, colors[Math.floor(Math.random()*colors.length)]);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(r.lastInsertRowid);
     }
 
-    const jwt_token = generateToken(user);
-    res.json({ token: jwt_token, user: { id:user.id,username:user.username,email:user.email,avatar_color:user.avatar_color,reputation:user.reputation,is_streamer:user.is_streamer,trust_level:user.trust_level,lang:user.lang,vk_id:user.vk_id,vk_name:user.vk_name,vk_photo:user.vk_photo } });
+    res.json({ token: generateToken(user), user: { id:user.id,username:user.username,email:user.email,avatar_color:user.avatar_color,reputation:user.reputation,is_streamer:user.is_streamer,trust_level:user.trust_level,lang:user.lang,vk_id:user.vk_id,vk_name:user.vk_name,vk_photo:user.vk_photo } });
   } catch (e) { console.error('VK auth error:', e.message); res.status(400).json({ error: e.message }); }
 });
 
 // ─── VK Link (for existing accounts) ───
 router.post('/auth/vk/link', authMiddleware, async (req, res) => {
   try {
-    const { code, redirect_uri } = req.body;
-    const vk = await exchangeVkCode(code, redirect_uri);
+    const { code, redirect_uri, code_verifier, device_id } = req.body;
+    const vk = await exchangeVkCode(code, redirect_uri, code_verifier, device_id);
     const db = getDb();
     const existing = db.prepare('SELECT id FROM users WHERE vk_id=?').get(vk.vk_id);
     if (existing && existing.id !== req.user.id) return res.status(409).json({ error: 'VK уже привязан к другому аккаунту' });
