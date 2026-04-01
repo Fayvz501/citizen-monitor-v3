@@ -35,9 +35,18 @@ async function exchangeVkCode(code, redirectUri) {
   const VK_APP_SECRET = process.env.VK_APP_SECRET;
   if (!VK_APP_ID || !VK_APP_SECRET) throw new Error('VK_APP_ID / VK_APP_SECRET not set');
 
-  // Exchange code for token
-  const tokenUrl = `https://oauth.vk.com/access_token?client_id=${VK_APP_ID}&client_secret=${VK_APP_SECRET}&redirect_uri=${encodeURIComponent(redirectUri)}&code=${code}`;
-  const tokenRes = await fetch(tokenUrl);
+  // Exchange code for token via VK ID
+  const tokenRes = await fetch('https://id.vk.com/oauth2/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code,
+      client_id: VK_APP_ID,
+      client_secret: VK_APP_SECRET,
+      redirect_uri: redirectUri,
+    }).toString()
+  });
   const tokenData = await tokenRes.json();
   if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
 
