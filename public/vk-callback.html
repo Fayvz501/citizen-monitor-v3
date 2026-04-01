@@ -5,8 +5,12 @@
 <script>
 const params = new URLSearchParams(window.location.search);
 const code = params.get('code');
+const payload = params.get('payload');
 if (code && window.opener) {
   window.opener.postMessage({ type: 'vk_code', code: code }, '*');
+  setTimeout(() => window.close(), 500);
+} else if (payload && window.opener) {
+  window.opener.postMessage({ type: 'vk_payload', payload: payload }, '*');
   setTimeout(() => window.close(), 500);
 } else {
   document.querySelector('h2').textContent = 'Закройте это окно';
