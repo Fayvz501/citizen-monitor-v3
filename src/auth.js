@@ -30,32 +30,44 @@ function socketAuth(socket, next) {
 function getVoteWeight(tl) { return TRUST_WEIGHTS[tl] || 1; }
 
 // ─── VK OAuth ───
-async function exchangeVkCode(code, redirectUri) {
+async function exchangeVkCode(code, redirectUri, codeVerifier, deviceId) {
   const VK_APP_ID = process.env.VK_APP_ID;
   const VK_APP_SECRET = process.env.VK_APP_SECRET;
   if (!VK_APP_ID || !VK_APP_SECRET) throw new Error('VK_APP_ID / VK_APP_SECRET not set');
 
-  // Exchange code for token
-  const tokenUrl = `https://oauth.vk.com/access_token?client_id=${VK_APP_ID}&client_secret=${VK_APP_SECRET}&redirect_uri=${encodeURIComponent(redirectUri)}&code=${code}`;
-  const tokenRes = await fetch(tokenUrl);
+  const params = {
+    grant_type: 'authorization_code',
+    code: code,
+    client_id: VK_APP_ID,
+    redirect_uri: redirectUri,
+    code_verifier: codeVerifier || '',
+  };
+  if (deviceId) params.device_id = deviceId;
+
+  const tokenRes = await fetch('https://id.vk.com/oauth2/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString()
+  });
   const tokenData = await tokenRes.json();
   if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
 
   const { access_token, user_id, email } = tokenData;
 
-  // Get user info
-  const userUrl = `https://api.vk.com/method/users.get?user_ids=${user_id}&fields=photo_100,first_name,last_name&access_token=${access_token}&v=5.199`;
-  const userRes = await fetch(userUrl);
+  // Get user info via VK ID user_info endpoint
+  const userRes = await fetch('https://id.vk.com/oauth2/user_info', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ access_token, client_id: VK_APP_ID }).toString()
+  });
   const userData = await userRes.json();
-  const vkUser = userData.response?.[0];
-  if (!vkUser) throw new Error('Failed to get VK user');
 
   return {
-    vk_id: user_id,
-    email: email || null,
-    first_name: vkUser.first_name,
-    last_name: vkUser.last_name,
-    photo: vkUser.photo_100,
+    vk_id: userData.user?.user_id || user_id,
+    email: userData.user?.email || email || null,
+    first_name: userData.user?.first_name || 'VK',
+    last_name: userData.user?.last_name || 'User',
+    photo: userData.user?.avatar || '',
     access_token,
   };
 }
