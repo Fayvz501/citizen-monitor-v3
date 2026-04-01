@@ -1,0 +1,26 @@
+# render.yaml — Render Blueprint (optional, can configure via dashboard instead)
+services:
+  - type: web
+    name: citizen-monitor
+    runtime: node
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: VK_APP_ID
+        sync: false
+      - key: VK_APP_SECRET
+        sync: false
+      - key: VK_BOT_WEBHOOK
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
