@@ -6,9 +6,38 @@
   <title>VK Auth</title>
 </head>
 <body style="margin:0;background:#0a0a0f;color:#e8e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
-  <div style="text-align:center">
+  <div style="text-align:center;padding:24px">
     <h2>⚡ Авторизация VK...</h2>
-    <p>Окно можно закрыть</p>
+    <p id="status" style="opacity:.8">Окно закроется автоматически</p>
   </div>
+
+  <script>
+    (function () {
+      const statusEl = document.getElementById('status');
+      const url = new URL(window.location.href);
+
+      const payload = {
+        source: 'citizen-vk-auth',
+        code: url.searchParams.get('code'),
+        device_id: url.searchParams.get('device_id'),
+        error: url.searchParams.get('error'),
+        error_description: url.searchParams.get('error_description'),
+        redirect_uri: window.location.origin + '/vk-callback.html'
+      };
+
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.postMessage(payload, window.location.origin);
+          setTimeout(() => window.close(), 300);
+          return;
+        } catch (e) {}
+      }
+
+      statusEl.textContent =
+        payload.error_description ||
+        payload.error ||
+        'Вернитесь в основное окно приложения';
+    })();
+  </script>
 </body>
 </html>
