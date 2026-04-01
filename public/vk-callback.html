@@ -1,43 +1,16 @@
 <!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VK Auth</title>
-</head>
-<body style="margin:0;background:#0a0a0f;color:#e8e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
-  <div style="text-align:center;padding:24px">
-    <h2>⚡ Авторизация VK...</h2>
-    <p id="status" style="opacity:.8">Окно закроется автоматически</p>
-  </div>
-
-  <script>
-    (function () {
-      const statusEl = document.getElementById('status');
-      const url = new URL(window.location.href);
-
-      const payload = {
-        source: 'citizen-vk-auth',
-        code: url.searchParams.get('code'),
-        device_id: url.searchParams.get('device_id'),
-        error: url.searchParams.get('error'),
-        error_description: url.searchParams.get('error_description'),
-        redirect_uri: window.location.origin + '/vk-callback.html'
-      };
-
-      if (window.opener && !window.opener.closed) {
-        try {
-          window.opener.postMessage(payload, window.location.origin);
-          setTimeout(() => window.close(), 300);
-          return;
-        } catch (e) {}
-      }
-
-      statusEl.textContent =
-        payload.error_description ||
-        payload.error ||
-        'Вернитесь в основное окно приложения';
-    })();
-  </script>
-</body>
-</html>
+<html><head><title>VK Auth</title></head>
+<body style="background:#141210;color:#e8e4dc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+<div style="text-align:center"><h2>Авторизация...</h2></div>
+<script>
+const params = new URLSearchParams(window.location.search);
+const code = params.get('code');
+if (code && window.opener) {
+  window.opener.postMessage({ type: 'vk_code', code: code }, '*');
+  setTimeout(() => window.close(), 500);
+} else {
+  document.querySelector('h2').textContent = 'Закройте это окно';
+  setTimeout(() => window.close(), 2000);
+}
+</script>
+</body></html>
