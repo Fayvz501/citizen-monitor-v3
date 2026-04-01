@@ -1,5 +1,71 @@
 <!DOCTYPE html>
-<html><head><title>VK Auth</title></head>
-<body style="background:#0a0a0f;color:#e8e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
-<div style="text-align:center"><h2>⚡ Авторизация VK...</h2><p>Окно закроется автоматически</p></div>
-</body></html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VK Auth</title>
+</head>
+<body style="margin:0;background:#0a0a0f;color:#e8e8f0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+  <div style="text-align:center;padding:24px">
+    <h2>⚡ Авторизация VK...</h2>
+    <p id="status" style="opacity:.8">Окно закроется автоматически</p>
+  </div>
+  <script>
+    (async function () {
+      const statusEl = document.getElementById('status');
+      const setStatus = (text, isError) => {
+        statusEl.textContent = text;
+        statusEl.style.color = isError ? '#ff8a8a' : '';
+      };
+
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+      const error = url.searchParams.get('error');
+      const errorDescription = url.searchParams.get('error_description');
+      const redirectUri = window.location.origin + '/vk-callback.html';
+
+      const payload = {
+        source: 'citizen-vk-auth',
+        code,
+        error,
+        error_description: errorDescription,
+        redirect_uri: redirectUri
+      };
+
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.postMessage(payload, window.location.origin);
+          setTimeout(() => window.close(), 300);
+          return;
+        } catch (e) {}
+      }
+
+      if (error) {
+        setStatus(errorDescription || error, true);
+        return;
+      }
+
+      if (!code) {
+        setStatus('VK не вернул код авторизации', true);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/vk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, redirect_uri: redirectUri })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.token) {
+          throw new Error(data.error || 'Ошибка авторизации VK');
+        }
+        localStorage.setItem('ct', data.token);
+        window.location.replace('/');
+      } catch (e) {
+        setStatus(e.message || 'Ошибка авторизации VK', true);
+      }
+    })();
+  </script>
+</body>
+</html>
