@@ -6,11 +6,13 @@
 const params = new URLSearchParams(window.location.search);
 const code = params.get('code');
 const payload = params.get('payload');
+const deviceId = params.get('device_id') || '';
+const state = params.get('state') || '';
 if (code && window.opener) {
-  window.opener.postMessage({ type: 'vk_code', code: code }, '*');
+  window.opener.postMessage({ type: 'vk_code', code: code, device_id: deviceId, state: state }, window.location.origin);
   setTimeout(() => window.close(), 500);
 } else if (payload && window.opener) {
-  window.opener.postMessage({ type: 'vk_payload', payload: payload }, '*');
+  window.opener.postMessage({ type: 'vk_payload', payload: payload, device_id: deviceId, state: state }, window.location.origin);
   setTimeout(() => window.close(), 500);
 } else {
   document.querySelector('h2').textContent = 'Закройте это окно';

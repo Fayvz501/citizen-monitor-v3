@@ -1,7 +1,7 @@
 {
   "name": "citizen-monitor",
   "version": "3.0.0",
-  "description": "Real-time incident monitoring with VK integration",
+  "description": "Real-time incident monitoring API with VK and Telegram HTTP integrations",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -22,7 +22,6 @@
     "express-rate-limit": "^7.1.5",
     "multer": "^1.4.5-lts.1",
     "uuid": "^9.0.0",
-    "web-push": "^3.6.7",
-    "node-telegram-bot-api": "^0.66.0"
+    "web-push": "^3.6.7"
   }
 }

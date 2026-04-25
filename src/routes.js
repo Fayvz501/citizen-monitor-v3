@@ -8,14 +8,16 @@ const { getDb } = require('./database');
 const { generateToken, authMiddleware, optionalAuth, modOnly, getVoteWeight, exchangeVkCode } = require('./auth');
 const { checkAndAward, getUserAchievements } = require('./achievements');
 const { moderateText } = require('./moderation');
-let notifyChannel, notifySOS;
-try { const tg = require('./telegram'); notifyChannel = tg.notifyChannel; notifySOS = tg.notifySOS; } catch { notifyChannel = () => {}; notifySOS = () => {}; }
 
 const router = express.Router();
-const VK_BOT_WEBHOOK = process.env.VK_BOT_WEBHOOK || '';
+const VK_BOT_WEBHOOK = process.env.VK_BOT_WEBHOOK || (process.env.VK_BOT_HOSTPORT ? `http://${process.env.VK_BOT_HOSTPORT}` : '');
+const TELEGRAM_BOT_WEBHOOK = process.env.TELEGRAM_BOT_WEBHOOK || (process.env.TELEGRAM_BOT_HOSTPORT ? `http://${process.env.TELEGRAM_BOT_HOSTPORT}` : '');
+const SERVICE_API_TOKEN = process.env.SERVICE_API_TOKEN || '';
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'public', 'uploads');
+const INCIDENT_TYPES = new Set(['fire', 'accident', 'suspicious', 'crime', 'medical', 'sos', 'other']);
 
 const storage = multer.diskStorage({
-  destination: path.join(__dirname, '..', 'public', 'uploads'),
+  destination: (req, file, cb) => { require('fs').mkdirSync(UPLOAD_DIR, { recursive: true }); cb(null, UPLOAD_DIR); },
   filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname))
 });
 const upload = multer({ storage, limits: { fileSize: 10*1024*1024 }, fileFilter: (req, file, cb) => {
@@ -26,6 +28,28 @@ const upload = multer({ storage, limits: { fileSize: 10*1024*1024 }, fileFilter:
 async function notifyVk(route, data) {
   if (!VK_BOT_WEBHOOK) return;
   try { await fetch(`${VK_BOT_WEBHOOK}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); } catch {}
+}
+
+async function notifyTelegram(route, data) {
+  if (!TELEGRAM_BOT_WEBHOOK) return;
+  const headers = { 'Content-Type': 'application/json' };
+  if (SERVICE_API_TOKEN) headers.Authorization = `Bearer ${SERVICE_API_TOKEN}`;
+  try {
+    await fetch(`${TELEGRAM_BOT_WEBHOOK}${route}`, { method: 'POST', headers, body: JSON.stringify(data) });
+  } catch (e) {
+    console.error('[TG HTTP] notify failed:', e.message);
+  }
+}
+
+function serviceAuth(req, res, next) {
+  if (!SERVICE_API_TOKEN) return res.status(503).json({ error: 'SERVICE_API_TOKEN is not configured' });
+  const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const direct = String(req.headers['x-service-token'] || '');
+  const token = bearer || direct;
+  const a = Buffer.from(token);
+  const b = Buffer.from(SERVICE_API_TOKEN);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Bad service token' });
+  next();
 }
 
 function haversine(lat1,lon1,lat2,lon2){const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180,a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
@@ -46,8 +70,8 @@ router.post('/auth/register', async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const colors = ['#ff3b3b','#ff8c00','#ffd000','#3b8bff','#00d97e','#a855f7','#f472b6','#06b6d4'];
     const r = db.prepare('INSERT INTO users (username,email,password_hash,avatar_color,lang) VALUES (?,?,?,?,?)').run(username, email, hash, colors[Math.floor(Math.random()*colors.length)], lang||'ru');
-    const user = db.prepare('SELECT id,username,email,avatar_color,reputation,is_streamer,trust_level,lang,vk_id,vk_photo FROM users WHERE id=?').get(r.lastInsertRowid);
-    res.json({ token: generateToken(user), user });
+    const user = db.prepare('SELECT * FROM users WHERE id=?').get(r.lastInsertRowid);
+    res.json({ token: generateToken(user), user: publicUser(user) });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -59,8 +83,66 @@ router.post('/auth/login', async (req, res) => {
     const user = db.prepare('SELECT * FROM users WHERE username=? OR email=?').get(login, login);
     if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Неверный логин или пароль' });
     db.prepare('UPDATE users SET last_active=CURRENT_TIMESTAMP WHERE id=?').run(user.id);
-    res.json({ token: generateToken(user), user: { id:user.id,username:user.username,email:user.email,avatar_color:user.avatar_color,reputation:user.reputation,is_streamer:user.is_streamer,trust_level:user.trust_level,lang:user.lang,vk_id:user.vk_id,vk_photo:user.vk_photo } });
+    res.json({ token: generateToken(user), user: publicUser(user) });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+
+// ─── Service auth for external Telegram bot/Mini App ───
+function safeUsername(raw, fallback) {
+  const cleaned = String(raw || '').toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+  const base = (cleaned || fallback || 'tg_user').substring(0, 18);
+  return base.length >= 3 ? base : `tg_${base}`;
+}
+function uniqueUsername(db, base) {
+  let candidate = base.substring(0, 20);
+  let i = 1;
+  while (db.prepare('SELECT id FROM users WHERE username=?').get(candidate)) {
+    const suffix = `_${i++}`;
+    candidate = `${base.substring(0, 20 - suffix.length)}${suffix}`;
+  }
+  return candidate;
+}
+function publicUser(u) {
+  return {
+    id: u.id, username: u.username, email: u.email, avatar_color: u.avatar_color,
+    reputation: u.reputation, is_streamer: u.is_streamer, is_patrolling: u.is_patrolling,
+    trust_level: u.trust_level, lang: u.lang, vk_id: u.vk_id, vk_name: u.vk_name, vk_photo: u.vk_photo,
+    telegram_id: u.telegram_id, telegram_name: u.telegram_name, telegram_username: u.telegram_username,
+    telegram_photo: u.telegram_photo
+  };
+}
+
+router.post('/service/telegram/auth', serviceAuth, async (req, res) => {
+  try {
+    const tgUser = req.body?.user || req.body?.telegram_user || {};
+    const id = Number(tgUser.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'Telegram user id required' });
+
+    const db = getDb();
+    const telegramName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim() || tgUser.username || `Telegram ${id}`;
+    const telegramUsername = tgUser.username || null;
+    const telegramPhoto = tgUser.photo_url || null;
+    let user = db.prepare('SELECT * FROM users WHERE telegram_id=?').get(id);
+
+    if (user) {
+      db.prepare('UPDATE users SET telegram_name=?, telegram_username=?, telegram_photo=?, last_active=CURRENT_TIMESTAMP WHERE id=?')
+        .run(telegramName, telegramUsername, telegramPhoto, user.id);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    } else {
+      const colors = ['#ff3b3b','#ff8c00','#ffd000','#3b8bff','#00d97e','#a855f7','#f472b6','#06b6d4'];
+      const base = safeUsername(telegramUsername || telegramName, `tg_${id}`);
+      const username = uniqueUsername(db, base);
+      const r = db.prepare('INSERT INTO users (username,email,telegram_id,telegram_name,telegram_username,telegram_photo,avatar_color,lang) VALUES (?,?,?,?,?,?,?,?)')
+        .run(username, null, id, telegramName, telegramUsername, telegramPhoto, colors[Math.floor(Math.random()*colors.length)], 'ru');
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(r.lastInsertRowid);
+    }
+
+    res.json({ token: generateToken(user), user: publicUser(user) });
+  } catch (e) {
+    console.error('[service/telegram/auth]', e);
+    res.status(500).json({ error: 'Telegram service auth failed' });
+  }
 });
 
 // ─── VK OAuth (VK ID with PKCE) ───
@@ -73,18 +155,21 @@ router.post('/auth/vk', async (req, res) => {
     const db = getDb();
 
     let user = db.prepare('SELECT * FROM users WHERE vk_id=?').get(vk.vk_id);
+    if (!user && vk.email) user = db.prepare('SELECT * FROM users WHERE email=?').get(vk.email);
+
     if (user) {
-      db.prepare('UPDATE users SET vk_name=?,vk_photo=?,last_active=CURRENT_TIMESTAMP WHERE id=?')
-        .run(`${vk.first_name} ${vk.last_name}`, vk.photo, user.id);
+      db.prepare('UPDATE users SET vk_id=?,vk_name=?,vk_photo=?,last_active=CURRENT_TIMESTAMP WHERE id=?')
+        .run(vk.vk_id, `${vk.first_name} ${vk.last_name}`, vk.photo, user.id);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     } else {
-      const username = `${vk.first_name}_${vk.vk_id}`.substring(0, 20);
+      const username = uniqueUsername(db, safeUsername(`${vk.first_name}_${vk.vk_id}`, `vk_${vk.vk_id}`));
       const colors = ['#ff3b3b','#ff8c00','#ffd000','#3b8bff','#00d97e','#a855f7'];
       const r = db.prepare('INSERT INTO users (username,email,vk_id,vk_name,vk_photo,avatar_color) VALUES (?,?,?,?,?,?)')
         .run(username, vk.email, vk.vk_id, `${vk.first_name} ${vk.last_name}`, vk.photo, colors[Math.floor(Math.random()*colors.length)]);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(r.lastInsertRowid);
     }
 
-    res.json({ token: generateToken(user), user: { id:user.id,username:user.username,email:user.email,avatar_color:user.avatar_color,reputation:user.reputation,is_streamer:user.is_streamer,trust_level:user.trust_level,lang:user.lang,vk_id:user.vk_id,vk_name:user.vk_name,vk_photo:user.vk_photo } });
+    res.json({ token: generateToken(user), user: publicUser(user) });
   } catch (e) { console.error('VK auth error:', e.message); res.status(400).json({ error: e.message }); }
 });
 
@@ -103,7 +188,7 @@ router.post('/auth/vk/link', authMiddleware, async (req, res) => {
 
 router.get('/auth/me', authMiddleware, (req, res) => {
   const db = getDb();
-  const u = db.prepare('SELECT id,username,email,avatar_color,reputation,is_streamer,trust_level,is_patrolling,lang,vk_id,vk_name,vk_photo,created_at FROM users WHERE id=?').get(req.user.id);
+  const u = db.prepare('SELECT id,username,email,avatar_color,reputation,is_streamer,trust_level,is_patrolling,lang,vk_id,vk_name,vk_photo,telegram_id,telegram_name,telegram_username,telegram_photo,created_at FROM users WHERE id=?').get(req.user.id);
   if (!u) return res.status(404).json({ error: 'Not found' });
   res.json({ user: u, achievements: getUserAchievements(req.user.id) });
 });
@@ -124,7 +209,10 @@ router.patch('/auth/lang', authMiddleware, (req, res) => {
 // ════════════════════════════════════
 
 router.get('/incidents', optionalAuth, (req, res) => {
-  const db = getDb(); const hours = parseInt(req.query.hours) || 24; const type = req.query.type;
+  const db = getDb();
+  const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 24 * 30);
+  const type = String(req.query.type || '');
+  const params = [];
   let sql = `SELECT i.*, u.username, u.avatar_color, u.reputation, u.trust_level, u.vk_photo,
     (SELECT COUNT(*) FROM votes WHERE incident_id=i.id AND vote_type='confirm') as confirms,
     (SELECT COUNT(*) FROM votes WHERE incident_id=i.id AND vote_type='fake') as fakes,
@@ -132,20 +220,29 @@ router.get('/incidents', optionalAuth, (req, res) => {
     (SELECT COUNT(*) FROM chat_messages WHERE incident_id=i.id) as chat_count,
     (SELECT COUNT(*) FROM streamer_claims WHERE incident_id=i.id AND status!='finished') as active_streamers,
     (SELECT GROUP_CONCAT(filename) FROM incident_media WHERE incident_id=i.id) as media_files
-    FROM incidents i JOIN users u ON i.user_id=u.id WHERE i.created_at > datetime('now','-${hours} hours') AND i.status!='fake'`;
-  if (type && type !== 'all') sql += ` AND i.type='${type}'`;
+    FROM incidents i JOIN users u ON i.user_id=u.id WHERE i.created_at > datetime('now', ?) AND i.status!='fake'`;
+  params.push(`-${hours} hours`);
+  if (type && type !== 'all') {
+    if (!INCIDENT_TYPES.has(type)) return res.status(400).json({ error: 'Bad type' });
+    sql += ' AND i.type=?';
+    params.push(type);
+  }
   sql += ' ORDER BY i.is_emergency DESC, i.created_at DESC';
-  res.json({ incidents: db.prepare(sql).all() });
+  res.json({ incidents: db.prepare(sql).all(params) });
 });
 
 router.post('/incidents', authMiddleware, upload.array('media', 5), async (req, res) => {
   try {
     const { type, description, address, lat, lng } = req.body;
     if (!type || !description || lat == null || lng == null) return res.status(400).json({ error: 'Заполните поля' });
+    if (!INCIDENT_TYPES.has(type)) return res.status(400).json({ error: 'Bad type' });
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return res.status(400).json({ error: 'Некорректные координаты' });
     const mod = moderateText(description); if (!mod.passed) return res.status(400).json({ error: 'Не прошло модерацию' });
     const db = getDb(); const uid = 'inc_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
     const isSos = type === 'sos' ? 1 : 0;
-    db.prepare('INSERT INTO incidents (uid,user_id,type,description,address,lat,lng,is_emergency,moderation_score) VALUES (?,?,?,?,?,?,?,?,?)').run(uid,req.user.id,type,description,address||null,parseFloat(lat),parseFloat(lng),isSos,mod.score);
+    db.prepare('INSERT INTO incidents (uid,user_id,type,description,address,lat,lng,is_emergency,moderation_score) VALUES (?,?,?,?,?,?,?,?,?)').run(uid,req.user.id,type,description,address||null,latNum,lngNum,isSos,mod.score);
     const incident = db.prepare(`SELECT i.*,u.username,u.avatar_color,u.reputation,u.trust_level,u.vk_photo,0 as confirms,0 as fakes,0 as comment_count,0 as chat_count,0 as active_streamers,NULL as media_files FROM incidents i JOIN users u ON i.user_id=u.id WHERE i.uid=?`).get(uid);
     if (req.files?.length) { for (const f of req.files) db.prepare('INSERT INTO incident_media (incident_id,user_id,filename,original_name,mime_type) VALUES (?,?,?,?,?)').run(incident.id,req.user.id,f.filename,f.originalname,f.mimetype); incident.media_files = req.files.map(f=>f.filename).join(','); }
     db.prepare('INSERT INTO incident_timeline (incident_id,user_id,event_type,description) VALUES (?,?,?,?)').run(incident.id,req.user.id,'created','Событие создано');
@@ -153,8 +250,8 @@ router.post('/incidents', authMiddleware, upload.array('media', 5), async (req, 
     const newAch = checkAndAward(req.user.id);
     notifyNearbyDb(db, incident);
     notifyVk('/notify/incident', { ...incident, username: req.user.username });
-    notifyChannel({ ...incident, username: req.user.username });
-    if (isSos) { notifyVk('/notify/sos', { ...incident, username: req.user.username }); notifySOS({ ...incident, username: req.user.username }); }
+    notifyTelegram('/notify/incident', { ...incident, username: req.user.username });
+    if (isSos) { notifyVk('/notify/sos', { ...incident, username: req.user.username }); notifyTelegram('/notify/sos', { ...incident, username: req.user.username }); }
     res.json({ incident, new_achievements: newAch });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -165,6 +262,7 @@ router.patch('/incidents/:uid/resolve', authMiddleware, (req, res) => {
   db.prepare("UPDATE incidents SET status='resolved',resolved_at=CURRENT_TIMESTAMP WHERE uid=?").run(req.params.uid);
   db.prepare('INSERT INTO incident_timeline (incident_id,user_id,event_type,description) VALUES (?,?,?,?)').run(inc.id,req.user.id,'resolved','Закрыто');
   notifyVk('/notify/status', { incident: inc, status: 'resolved' });
+  notifyTelegram('/notify/status', { incident: inc, status: 'resolved' });
   res.json({ success: true });
 });
 
@@ -182,8 +280,8 @@ router.post('/incidents/:uid/vote', authMiddleware, (req, res) => {
     else db.prepare('INSERT INTO votes (incident_id,user_id,vote_type,weight) VALUES (?,?,?,?)').run(inc.id,req.user.id,vote_type,w);
     const confirms=db.prepare("SELECT COALESCE(SUM(weight),0) as w FROM votes WHERE incident_id=? AND vote_type='confirm'").get(inc.id).w;
     const fakes=db.prepare("SELECT COALESCE(SUM(weight),0) as w FROM votes WHERE incident_id=? AND vote_type='fake'").get(inc.id).w;
-    if (fakes>=8&&fakes>confirms*2){db.prepare("UPDATE incidents SET status='fake' WHERE id=?").run(inc.id);notifyVk('/notify/status',{incident:inc,status:'fake'});}
-    else if(confirms>=5){db.prepare("UPDATE incidents SET status='confirmed' WHERE id=?").run(inc.id);db.prepare('UPDATE users SET reputation=reputation+2 WHERE id=?').run(inc.user_id);notifyVk('/notify/status',{incident:inc,status:'confirmed'});}
+    if (fakes>=8&&fakes>confirms*2){db.prepare("UPDATE incidents SET status='fake' WHERE id=?").run(inc.id);notifyVk('/notify/status',{incident:inc,status:'fake'});notifyTelegram('/notify/status',{incident:inc,status:'fake'});}
+    else if(confirms>=5){db.prepare("UPDATE incidents SET status='confirmed' WHERE id=?").run(inc.id);db.prepare('UPDATE users SET reputation=reputation+2 WHERE id=?').run(inc.user_id);notifyVk('/notify/status',{incident:inc,status:'confirmed'});notifyTelegram('/notify/status',{incident:inc,status:'confirmed'});}
     checkAndAward(req.user.id); res.json({ confirms: Math.round(confirms), fakes: Math.round(fakes) });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Error' }); }
 });
@@ -204,7 +302,7 @@ router.get('/incidents/:uid/timeline', (req,res)=>{const db=getDb();const inc=db
 // ════════════════════════════════════
 router.post('/incidents/:uid/claim', authMiddleware, (req,res)=>{const db=getDb();const inc=db.prepare('SELECT id FROM incidents WHERE uid=?').get(req.params.uid);if(!inc)return res.status(404).json({error:'Not found'});try{db.prepare('INSERT INTO streamer_claims (incident_id,user_id) VALUES (?,?)').run(inc.id,req.user.id);db.prepare("UPDATE incidents SET status='responding' WHERE id=? AND status='active'").run(inc.id);db.prepare('INSERT INTO incident_timeline (incident_id,user_id,event_type,description) VALUES (?,?,?,?)').run(inc.id,req.user.id,'streamer_claimed',`Стример ${req.user.username} выезжает`);checkAndAward(req.user.id);notifyVk('/notify/streamer',{incident_uid:req.params.uid,username:req.user.username,action:'claimed'});res.json({success:true});}catch(e){if(e.message?.includes('UNIQUE'))return res.status(409).json({error:'Already claimed'});throw e;}});
 
-router.post('/sos', authMiddleware, (req,res)=>{const{lat,lng,description}=req.body;if(lat==null||lng==null)return res.status(400).json({error:'Coords required'});const db=getDb();const uid='sos_'+Date.now()+'_'+crypto.randomBytes(4).toString('hex');db.prepare("INSERT INTO incidents (uid,user_id,type,description,lat,lng,severity,is_emergency,status) VALUES (?,?,'sos',?,?,?,5,1,'active')").run(uid,req.user.id,description||'SOS! Нужна помощь!',parseFloat(lat),parseFloat(lng));const inc=db.prepare('SELECT * FROM incidents WHERE uid=?').get(uid);db.prepare('INSERT INTO incident_timeline (incident_id,user_id,event_type,description) VALUES (?,?,?,?)').run(inc.id,req.user.id,'sos','SOS активирован');notifyVk('/notify/sos',{...inc,username:req.user.username});notifySOS({...inc,username:req.user.username});res.json({incident:inc});});
+router.post('/sos', authMiddleware, (req,res)=>{const{lat,lng,description}=req.body;if(lat==null||lng==null)return res.status(400).json({error:'Coords required'});const db=getDb();const uid='sos_'+Date.now()+'_'+crypto.randomBytes(4).toString('hex');db.prepare("INSERT INTO incidents (uid,user_id,type,description,lat,lng,severity,is_emergency,status) VALUES (?,?,'sos',?,?,?,5,1,'active')").run(uid,req.user.id,description||'SOS! Нужна помощь!',parseFloat(lat),parseFloat(lng));const inc=db.prepare('SELECT * FROM incidents WHERE uid=?').get(uid);db.prepare('INSERT INTO incident_timeline (incident_id,user_id,event_type,description) VALUES (?,?,?,?)').run(inc.id,req.user.id,'sos','SOS активирован');notifyVk('/notify/sos',{...inc,username:req.user.username});notifyTelegram('/notify/sos',{...inc,username:req.user.username});res.json({incident:inc});});
 
 router.patch('/patrol/toggle', authMiddleware, (req,res)=>{const db=getDb();const u=db.prepare('SELECT is_patrolling FROM users WHERE id=?').get(req.user.id);const v=u.is_patrolling?0:1;db.prepare('UPDATE users SET is_patrolling=? WHERE id=?').run(v,req.user.id);res.json({is_patrolling:v});});
 router.post('/patrol/location', authMiddleware, (req,res)=>{const{lat,lng}=req.body;getDb().prepare('UPDATE users SET patrol_lat=?,patrol_lng=?,last_active=CURRENT_TIMESTAMP WHERE id=?').run(parseFloat(lat),parseFloat(lng),req.user.id);res.json({success:true});});
@@ -235,7 +333,7 @@ router.get('/analytics/leaderboard', (req,res)=>{res.json({leaderboard:getDb().p
 router.get('/analytics/safety', (req,res)=>{const{lat,lng}=req.query;if(!lat||!lng)return res.status(400).json({error:'lat & lng'});const r=0.02;const inc=getDb().prepare('SELECT type,COUNT(*) as count FROM incidents WHERE lat BETWEEN ?-? AND ?+? AND lng BETWEEN ?-? AND ?+? AND created_at>datetime(\'now\',\'-30 days\') AND status!=\'fake\' GROUP BY type').all(parseFloat(lat),r,parseFloat(lat),r,parseFloat(lng),r,parseFloat(lng),r);const t=inc.reduce((s,i)=>s+i.count,0);const sc=Math.max(0,Math.round(100-t*3));res.json({score:sc,level:sc>=80?'safe':sc>=50?'moderate':'dangerous',total_incidents:t,breakdown:inc});});
 
 // ═══ USER PROFILE ═══
-router.get('/users/:id/profile', (req,res)=>{const db=getDb();const u=db.prepare('SELECT id,username,avatar_color,reputation,is_streamer,trust_level,vk_id,vk_name,vk_photo,created_at FROM users WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Not found'});const s={reports:db.prepare("SELECT COUNT(*) as c FROM incidents WHERE user_id=? AND status!='fake'").get(u.id).c,confirmed:db.prepare("SELECT COUNT(*) as c FROM incidents WHERE user_id=? AND status='confirmed'").get(u.id).c,votes:db.prepare('SELECT COUNT(*) as c FROM votes WHERE user_id=?').get(u.id).c,comments:db.prepare('SELECT COUNT(*) as c FROM comments WHERE user_id=?').get(u.id).c,streams:db.prepare('SELECT COUNT(*) as c FROM streamer_claims WHERE user_id=?').get(u.id).c};const bt=db.prepare("SELECT type,COUNT(*) as count FROM incidents WHERE user_id=? AND status!='fake' GROUP BY type").all(u.id);res.json({user:u,stats:s,byType:bt,achievements:getUserAchievements(u.id)});});
+router.get('/users/:id/profile', (req,res)=>{const db=getDb();const u=db.prepare('SELECT id,username,avatar_color,reputation,is_streamer,trust_level,vk_id,vk_name,vk_photo,telegram_id,telegram_name,telegram_username,telegram_photo,created_at FROM users WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Not found'});const s={reports:db.prepare("SELECT COUNT(*) as c FROM incidents WHERE user_id=? AND status!='fake'").get(u.id).c,confirmed:db.prepare("SELECT COUNT(*) as c FROM incidents WHERE user_id=? AND status='confirmed'").get(u.id).c,votes:db.prepare('SELECT COUNT(*) as c FROM votes WHERE user_id=?').get(u.id).c,comments:db.prepare('SELECT COUNT(*) as c FROM comments WHERE user_id=?').get(u.id).c,streams:db.prepare('SELECT COUNT(*) as c FROM streamer_claims WHERE user_id=?').get(u.id).c};const bt=db.prepare("SELECT type,COUNT(*) as count FROM incidents WHERE user_id=? AND status!='fake' GROUP BY type").all(u.id);res.json({user:u,stats:s,byType:bt,achievements:getUserAchievements(u.id)});});
 router.get('/achievements', authMiddleware, (req,res)=>{res.json({achievements:getUserAchievements(req.user.id)});});
 
 // ═══ EMERGENCY (mod only) ═══

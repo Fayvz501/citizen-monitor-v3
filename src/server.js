@@ -9,20 +9,21 @@ const path = require('path');
 const { initDb } = require('./database');
 const { socketAuth } = require('./auth');
 const routes = require('./routes');
-let initBot, initPush;
-try { initBot = require('./telegram').initBot; } catch { initBot = () => {}; }
+let initPush;
 try { initPush = require('./push').initPush; } catch { initPush = () => {}; }
 
 const app = express();
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'public', 'uploads');
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(rateLimit({ windowMs: 15*60*1000, max: 300 }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
-app.use('/uploads', express.static(path.join(__dirname, '..', 'public', 'uploads')));
+app.use('/uploads', express.static(UPLOAD_DIR));
 app.use('/api', routes);
 
 const online = new Map();
@@ -47,8 +48,7 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'in
 
 (async () => {
   await initDb();
-  initBot();
   initPush();
   const PORT = process.env.PORT || 3000;
-  server.listen(PORT, () => console.log(`\n  ⚡ Citizen Monitor v3 — http://localhost:${PORT}\n`));
+  server.listen(PORT, () => console.log(`\n  ⚡ Citizen Monitor API — http://localhost:${PORT}\n`));
 })();

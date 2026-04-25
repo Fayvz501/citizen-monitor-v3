@@ -1,7 +1,7 @@
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
-const DB_PATH = path.join(__dirname, '..', 'db', 'citizen.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'db', 'citizen.db');
 let db = null;
 
 class Statement {
@@ -49,6 +49,10 @@ async function initDb() {
       vk_id INTEGER UNIQUE,
       vk_name TEXT,
       vk_photo TEXT,
+      telegram_id INTEGER UNIQUE,
+      telegram_name TEXT,
+      telegram_username TEXT,
+      telegram_photo TEXT,
       avatar_color TEXT DEFAULT '#ff3b3b',
       reputation INTEGER DEFAULT 0,
       is_streamer INTEGER DEFAULT 0,
@@ -122,7 +126,17 @@ async function initDb() {
     );
   `);
 
-  const idxs = ['CREATE INDEX IF NOT EXISTS i1 ON incidents(status)','CREATE INDEX IF NOT EXISTS i2 ON incidents(created_at)','CREATE INDEX IF NOT EXISTS i3 ON incidents(lat,lng)','CREATE INDEX IF NOT EXISTS i4 ON comments(incident_id)','CREATE INDEX IF NOT EXISTS i5 ON votes(incident_id)','CREATE INDEX IF NOT EXISTS i6 ON notifications(user_id,is_read)','CREATE INDEX IF NOT EXISTS i7 ON chat_messages(incident_id)','CREATE INDEX IF NOT EXISTS i8 ON incident_timeline(incident_id)','CREATE INDEX IF NOT EXISTS i9 ON achievements(user_id)','CREATE INDEX IF NOT EXISTS i10 ON incident_media(incident_id)'];
+
+
+  const migrations = [
+    "ALTER TABLE users ADD COLUMN telegram_id INTEGER",
+    "ALTER TABLE users ADD COLUMN telegram_name TEXT",
+    "ALTER TABLE users ADD COLUMN telegram_username TEXT",
+    "ALTER TABLE users ADD COLUMN telegram_photo TEXT"
+  ];
+  for (const migration of migrations) { try { db.exec(migration); } catch {} }
+
+  const idxs = ['CREATE INDEX IF NOT EXISTS i1 ON incidents(status)','CREATE INDEX IF NOT EXISTS i2 ON incidents(created_at)','CREATE INDEX IF NOT EXISTS i3 ON incidents(lat,lng)','CREATE INDEX IF NOT EXISTS i4 ON comments(incident_id)','CREATE INDEX IF NOT EXISTS i5 ON votes(incident_id)','CREATE INDEX IF NOT EXISTS i6 ON notifications(user_id,is_read)','CREATE INDEX IF NOT EXISTS i7 ON chat_messages(incident_id)','CREATE INDEX IF NOT EXISTS i8 ON incident_timeline(incident_id)','CREATE INDEX IF NOT EXISTS i9 ON achievements(user_id)','CREATE INDEX IF NOT EXISTS i10 ON incident_media(incident_id)','CREATE UNIQUE INDEX IF NOT EXISTS i11 ON users(telegram_id) WHERE telegram_id IS NOT NULL'];
   for (const i of idxs) { try { db.exec(i); } catch {} }
   db.save();
 

@@ -34,42 +34,62 @@ async function exchangeVkCode(code, redirectUri, codeVerifier, deviceId) {
   const VK_APP_ID = process.env.VK_APP_ID;
   const VK_APP_SECRET = process.env.VK_APP_SECRET;
   if (!VK_APP_ID || !VK_APP_SECRET) throw new Error('VK_APP_ID / VK_APP_SECRET not set');
+  if (!code) throw new Error('VK code is missing');
+  if (!redirectUri) throw new Error('VK redirect_uri is missing');
+  if (!codeVerifier) throw new Error('VK code_verifier is missing');
+  if (!deviceId) throw new Error('VK device_id is missing');
 
   const params = {
     grant_type: 'authorization_code',
-    code: code,
+    code,
     client_id: VK_APP_ID,
+    client_secret: VK_APP_SECRET,
     redirect_uri: redirectUri,
-    code_verifier: codeVerifier || '',
+    code_verifier: codeVerifier,
+    device_id: deviceId,
   };
-  if (deviceId) params.device_id = deviceId;
 
   const tokenRes = await fetch('https://id.vk.com/oauth2/auth', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString()
   });
-  const tokenData = await tokenRes.json();
-  if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
+
+  const tokenText = await tokenRes.text();
+  let tokenData;
+  try { tokenData = JSON.parse(tokenText); } catch { throw new Error(`VK token response is not JSON: ${tokenText.slice(0, 120)}`); }
+  if (!tokenRes.ok || tokenData.error) {
+    const desc = typeof tokenData.error_description === 'string' ? tokenData.error_description : JSON.stringify(tokenData.error_description || tokenData);
+    throw new Error(desc || tokenData.error || 'VK token exchange failed');
+  }
 
   const { access_token, user_id, email } = tokenData;
+  if (!access_token) throw new Error('VK did not return access_token');
 
-  // Get user info via VK ID user_info endpoint
   const userRes = await fetch('https://id.vk.com/oauth2/user_info', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ access_token, client_id: VK_APP_ID }).toString()
   });
-  const userData = await userRes.json();
 
+  const userText = await userRes.text();
+  let userData;
+  try { userData = JSON.parse(userText); } catch { throw new Error(`VK user_info response is not JSON: ${userText.slice(0, 120)}`); }
+  if (!userRes.ok || userData.error) {
+    const desc = typeof userData.error_description === 'string' ? userData.error_description : JSON.stringify(userData.error_description || userData);
+    throw new Error(desc || userData.error || 'VK user_info failed');
+  }
+
+  const user = userData.user || userData;
   return {
-    vk_id: userData.user?.user_id || user_id,
-    email: userData.user?.email || email || null,
-    first_name: userData.user?.first_name || 'VK',
-    last_name: userData.user?.last_name || 'User',
-    photo: userData.user?.avatar || '',
+    vk_id: user.user_id || user.id || user_id,
+    email: user.email || email || null,
+    first_name: user.first_name || 'VK',
+    last_name: user.last_name || 'User',
+    photo: user.avatar || user.photo_200 || user.photo || '',
     access_token,
   };
 }
+
 
 module.exports = { generateToken, authMiddleware, optionalAuth, modOnly, socketAuth, getVoteWeight, exchangeVkCode, JWT_SECRET };
