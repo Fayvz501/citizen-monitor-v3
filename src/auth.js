@@ -37,8 +37,6 @@ async function exchangeVkCode(code, redirectUri, codeVerifier, deviceId) {
   if (!code) throw new Error('VK code is missing');
   if (!redirectUri) throw new Error('VK redirect_uri is missing');
   if (!codeVerifier) throw new Error('VK code_verifier is missing');
-  if (!deviceId) throw new Error('VK device_id is missing');
-
   const params = {
     grant_type: 'authorization_code',
     code,
@@ -46,8 +44,8 @@ async function exchangeVkCode(code, redirectUri, codeVerifier, deviceId) {
     client_secret: VK_APP_SECRET,
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
-    device_id: deviceId,
   };
+  if (deviceId) params.device_id = deviceId;
 
   const tokenRes = await fetch('https://id.vk.com/oauth2/auth', {
     method: 'POST',

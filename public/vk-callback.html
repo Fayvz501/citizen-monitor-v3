@@ -3,20 +3,42 @@
 <body style="background:#141210;color:#e8e4dc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
 <div style="text-align:center"><h2>Авторизация...</h2></div>
 <script>
-const params = new URLSearchParams(window.location.search);
-const code = params.get('code');
-const payload = params.get('payload');
-const deviceId = params.get('device_id') || '';
-const state = params.get('state') || '';
-if (code && window.opener) {
-  window.opener.postMessage({ type: 'vk_code', code: code, device_id: deviceId, state: state }, window.location.origin);
-  setTimeout(() => window.close(), 500);
-} else if (payload && window.opener) {
-  window.opener.postMessage({ type: 'vk_payload', payload: payload, device_id: deviceId, state: state }, window.location.origin);
-  setTimeout(() => window.close(), 500);
+const search = new URLSearchParams(window.location.search || '');
+const hash = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+const get = (name) => search.get(name) || hash.get(name) || '';
+let code = get('code');
+let payload = get('payload');
+let deviceId = get('device_id');
+const state = get('state');
+const error = get('error');
+const errorDescription = get('error_description');
+
+if (!code && payload) {
+  try {
+    const parsed = JSON.parse(decodeURIComponent(payload));
+    code = parsed.code || code;
+    deviceId = parsed.device_id || deviceId;
+  } catch (e) {}
+}
+
+function sendToParent(data) {
+  const message = { ...data, ts: Date.now() };
+  try { localStorage.setItem('vk_oauth_result', JSON.stringify(message)); } catch (e) {}
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(message, window.location.origin);
+    }
+  } catch (e) {}
+  setTimeout(() => window.close(), 400);
+}
+
+if (error) {
+  sendToParent({ type: 'vk_error', error, error_description: errorDescription, state });
+} else if (code) {
+  sendToParent({ type: 'vk_code', code, device_id: deviceId, state });
 } else {
-  document.querySelector('h2').textContent = 'Закройте это окно';
-  setTimeout(() => window.close(), 2000);
+  document.querySelector('h2').textContent = 'Код авторизации VK не получен';
+  sendToParent({ type: 'vk_error', error: 'no_code', error_description: 'VK did not return authorization code', state });
 }
 </script>
 </body></html>
