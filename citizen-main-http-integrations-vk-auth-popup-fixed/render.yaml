@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: citizen-monitor
+    runtime: node
+    buildCommand: npm install
+    startCommand: node src/server.js
+    disk:
+      name: citizen-data
+      mountPath: /opt/render/project/src/citizen-monitor/data
+      sizeGB: 5
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SERVICE_API_TOKEN
+        sync: false
+      - key: DB_PATH
+        value: /opt/render/project/src/citizen-monitor/data/citizen.db
+      - key: UPLOAD_DIR
+        value: /opt/render/project/src/citizen-monitor/data/uploads
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: VK_APP_ID
+        sync: false
+      - key: VK_APP_SECRET
+        sync: false
+      - key: VK_BOT_WEBHOOK
+        sync: false
+      - key: TELEGRAM_BOT_WEBHOOK
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_EMAIL
+        value: mailto:admin@citizen.app
